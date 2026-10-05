@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nrat-prompt"
+version = "0.1.0"
+description = "Fetch and validate one daily NRAT OK search page"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.32,<3", "beautifulsoup4>=4.12,<5"]
+
+[project.scripts]
+nrat-page = "nrat.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
