@@ -1,1 +1,1 @@
-"""Single-page NRAT OK search; no PDF requests or automatic traversal."""
+"""One-page and one-day NRAT OK metadata search; no PDF requests."""

@@ -95,7 +95,8 @@ class HttpClient:
         if delay:
             self._sleep(delay)
 
-    def fetch(self, query_date: date, page: int, validator: Callable[[str], T]) -> HttpResult[T]:
+    def fetch(self, query_date: date, page: int, validator: Callable[[str], T], *,
+              on_failure: Callable[[AttemptFailure], None] | None = None) -> HttpResult[T]:
         params = search_params(query_date, page)
         # One client also serializes callers; it never follows discovered links.
         with self._lock:
@@ -141,6 +142,8 @@ class HttpClient:
                     self._last_date = query_date
                     if response is not None:
                         response.close()
+                if on_failure is not None:
+                    on_failure(errors[-1])
                 if not retryable or attempt == MAX_ATTEMPTS:
                     return HttpResult(None, attempt, tuple(errors))
                 retry_delay = retry_wait(15 if attempt == 1 else 30, retry_after)

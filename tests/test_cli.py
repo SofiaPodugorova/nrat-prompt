@@ -1,7 +1,8 @@
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 import io
 import json
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -27,3 +28,44 @@ class CliTests(unittest.TestCase):
                     self.assertEqual(main(), code)
                 self.assertEqual(json.loads(output.getvalue())["status"], status)
                 self.assertEqual(fetch.call_args.args[1:], (date.fromisoformat(DAY), 1))
+
+    def test_day_command_paths_summary_and_exit_codes(self):
+        for status, interrupted, expected in [("complete", False, 0), ("incomplete", False, 2),
+                                               ("incomplete", True, 130)]:
+            for custom in (False, True):
+                with self.subTest(status=status, interrupted=interrupted, custom=custom):
+                    report = dict(status=status, interrupted=interrupted, query_date=DAY,
+                                  reported_count=2, unique_count=2, pages_processed=2,
+                                  repeat_count=1, incomplete_reasons=[])
+                    args = ["nrat", "day", "--date", DAY]
+                    path = Path("data/custom.json") if custom else Path(f"data/days/{DAY}.json")
+                    if custom:
+                        args += ["--output", str(path)]
+                    stdout = io.StringIO()
+                    with patch("sys.argv", args), patch("nrat.__main__.HttpClient"), \
+                            patch("nrat.__main__.collect_day", return_value=report) as collect, \
+                            patch("nrat.__main__.fetch_page") as single_page, redirect_stdout(stdout):
+                        self.assertEqual(main(), expected)
+                    self.assertEqual(collect.call_args.args[1:], (date.fromisoformat(DAY), path))
+                    single_page.assert_not_called()
+                    summary = json.loads(stdout.getvalue())
+                    self.assertEqual(summary["output"], str(path))
+                    self.assertEqual(summary["status"], status)
+
+    def test_day_storage_error_is_sanitized(self):
+        stderr = io.StringIO()
+        with patch("sys.argv", ["nrat", "day", "--date", DAY]), \
+                patch("nrat.__main__.HttpClient"), \
+                patch("nrat.__main__.collect_day", side_effect=OSError("secret-token")), \
+                redirect_stderr(stderr):
+            self.assertEqual(main(), 1)
+        self.assertIn("OSError", stderr.getvalue())
+        self.assertNotIn("secret-token", stderr.getvalue())
+
+    def test_day_invalid_output_rejected_before_client_creation(self):
+        with patch("sys.argv", ["nrat", "day", "--date", DAY, "--output", "README.md"]), \
+                patch("nrat.__main__.HttpClient") as client, redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                main()
+        self.assertEqual(raised.exception.code, 2)
+        client.assert_not_called()

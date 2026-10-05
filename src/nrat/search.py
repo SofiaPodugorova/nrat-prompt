@@ -26,6 +26,7 @@ class CardIssue:
     category: str
     reason: str
     description: str
+    record: ListingRecord | None = None
 
 
 @dataclass(frozen=True)
@@ -155,13 +156,14 @@ def parse_page(html: str, query_date: date, page: int) -> SearchPage:
         if not number:
             issues.append(CardIssue(index, "listing_number_missing", "Source link has no listing number", description))
             continue
-        if doc_id in seen:
-            issues.append(CardIssue(index, "duplicate_doc_id", "Card repeats a doc_id already present on this page", description))
-            continue
-        seen.add(doc_id)
         title_tag = card.select_one('[name="title"]')
         title = title_tag.get_text(" ", strip=True) if title_tag else ""
-        records.append(ListingRecord(doc_id, number, url, title, description, query_date.isoformat()))
+        record = ListingRecord(doc_id, number, url, title, description, query_date.isoformat())
+        if doc_id in seen:
+            issues.append(CardIssue(index, "duplicate_doc_id", "Card repeats a doc_id already present on this page", description, record))
+            continue
+        seen.add(doc_id)
+        records.append(record)
     warnings = []
     if limited:
         warnings.append("Site explicitly limits the search results")
@@ -171,6 +173,6 @@ def parse_page(html: str, query_date: date, page: int) -> SearchPage:
                       not issues, next_url, limited, count >= 1000, tuple(warnings), count == 0)
 
 
-def fetch_page(client: HttpClient, query_date: date, page: int) -> HttpResult[SearchPage]:
+def fetch_page(client: HttpClient, query_date: date, page: int, *, on_failure=None) -> HttpResult[SearchPage]:
     """Fetch exactly one requested page; never follow next_page_url/source_url."""
-    return client.fetch(query_date, page, lambda html: parse_page(html, query_date, page))
+    return client.fetch(query_date, page, lambda html: parse_page(html, query_date, page), on_failure=on_failure)

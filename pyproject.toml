@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nrat-prompt"
-version = "0.1.0"
-description = "Fetch and validate one daily NRAT OK search page"
+version = "0.2.0"
+description = "Fetch and validate NRAT OK metadata for one page or one day"
 requires-python = ">=3.10"
 dependencies = ["requests>=2.32,<3", "beautifulsoup4>=4.12,<5"]
 
