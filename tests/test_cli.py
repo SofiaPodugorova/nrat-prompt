@@ -69,3 +69,39 @@ class CliTests(unittest.TestCase):
                 main()
         self.assertEqual(raised.exception.code, 2)
         client.assert_not_called()
+
+    def test_collect_command_requires_year_and_checks_limits(self):
+        for args in ([], ["--year", "0"], ["--year", "2010", "--day", "2012-01-01"],
+                     ["--year", "2010", "--max-downloads", "-1"]):
+            with self.subTest(args=args), patch("sys.argv", ["nrat", "collect", *args]), \
+                    patch("nrat.__main__.HttpClient") as client, redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    main()
+                self.assertEqual(raised.exception.code, 2)
+                client.assert_not_called()
+
+    def test_collect_command_arguments_and_exit_codes(self):
+        for status, code in (("finished", 0), ("limited", 2), ("interrupted", 130), ("failed", 1)):
+            result = {"summary": {"status": "complete" if code == 0 else "incomplete"},
+                      "runs": [{"status": status}]}
+            output = io.StringIO()
+            with self.subTest(status=status), \
+                    patch("sys.argv", ["nrat", "collect", "--year", "2010", "--day", DAY,
+                                       "--max-downloads", "3", "--work-dir", "data/test", "--no-archive"]), \
+                    patch("nrat.__main__.HttpClient"), \
+                    patch("nrat.collector.collect", return_value=result) as collect, redirect_stdout(output):
+                self.assertEqual(main(), code)
+            self.assertEqual(collect.call_args.args[1:], (2010, Path("data/test")))
+            self.assertEqual(collect.call_args.kwargs,
+                             dict(day=date.fromisoformat(DAY), max_downloads=3, make_archive=False))
+            self.assertEqual(json.loads(output.getvalue())["run"]["status"], status)
+
+    def test_collect_checkpoint_error_is_reported_without_reset(self):
+        from nrat.state import CheckpointError
+        stderr = io.StringIO()
+        with patch("sys.argv", ["nrat", "collect", "--year", "2010"]), \
+                patch("nrat.__main__.HttpClient"), \
+                patch("nrat.collector.collect", side_effect=CheckpointError("Damaged checkpoint; nothing was reset")), \
+                redirect_stderr(stderr):
+            self.assertEqual(main(), 1)
+        self.assertIn("nothing was reset", stderr.getvalue())

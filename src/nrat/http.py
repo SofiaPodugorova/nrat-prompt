@@ -5,6 +5,7 @@ from datetime import date
 from threading import Lock
 import time
 from typing import Callable, Generic, TypeVar
+from urllib.parse import urljoin
 
 import requests
 
@@ -27,6 +28,7 @@ class AttemptFailure:
     category: str
     reason: str
     http_code: int | None
+    exception_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,7 @@ class HttpClient:
         self._clock = clock
         self._last_end: float | None = None
         self._last_date: date | None = None
+        self._kind_end = {}
         self._lock = Lock()
 
     def __enter__(self):
@@ -86,11 +89,17 @@ class HttpClient:
     def close(self):
         self._session.close()
 
-    def _wait(self, query_date: date, retry_delay: int):
+    def _wait(self, query_date: date, retry_delay: int, kind="search"):
         remaining = 0.0
         if self._last_end is not None:
-            minimum = 3 if query_date == self._last_date else 5
-            remaining = max(0.0, minimum - (self._clock() - self._last_end))
+            if query_date != self._last_date:
+                remaining = max(0.0, 5 - (self._clock() - self._last_end))
+            else:
+                remaining = max(0.0, (3 if kind == "search" else 1)
+                                - (self._clock() - self._last_end))
+        if kind in self._kind_end:
+            remaining = max(remaining, (3 if kind == "search" else 1)
+                            - (self._clock() - self._kind_end[kind]))
         delay = max(remaining, retry_delay)
         if delay:
             self._sleep(delay)
@@ -136,15 +145,85 @@ class HttpClient:
                         reason = f"Network timeout ({type(exc).__name__})"
                     else:
                         reason = f"Network request failed ({type(exc).__name__})"
-                    errors.append(AttemptFailure(attempt, "page_fail", reason, code))
+                    errors.append(AttemptFailure(attempt, "page_fail", reason, code, type(exc).__name__))
                 finally:
                     self._last_end = self._clock()
                     self._last_date = query_date
+                    self._kind_end["search"] = self._last_end
                     if response is not None:
                         response.close()
                 if on_failure is not None:
                     on_failure(errors[-1])
                 if not retryable or attempt == MAX_ATTEMPTS:
                     return HttpResult(None, attempt, tuple(errors))
+                retry_delay = retry_wait(15 if attempt == 1 else 30, retry_after)
+        raise AssertionError("unreachable")
+
+    def fetch_pdf(self, query_date: date, source_url: str, writer, *,
+                  on_attempt=None, on_failure=None):
+        """One retry budget; each attempt includes at most three safe redirects."""
+        from .download import DownloadResult, allowed_url
+        if not allowed_url(source_url):
+            raise ValueError("PDF source URL is not an allowed HTTPS URL")
+        with self._lock:
+            errors = []
+            retry_delay = 0
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                self._wait(query_date, retry_delay, "pdf")
+                if on_attempt is not None:
+                    on_attempt(attempt)
+                url = source_url
+                code = None
+                retryable = True
+                retry_after = None
+                try:
+                    for hop in range(4):
+                        if hop:
+                            self._wait(query_date, 0, "pdf")
+                        response = None
+                        try:
+                            response = self._session.get(url, timeout=(30, 120),
+                                                         allow_redirects=False, stream=True)
+                            code = response.status_code
+                            retry_after = response.headers.get("Retry-After")
+                            if code in {301, 302, 303, 307, 308}:
+                                retryable = False
+                                location = response.headers.get("Location")
+                                try:
+                                    destination = urljoin(url, location or "")
+                                except ValueError:
+                                    raise ResponseValidationError("redirect_invalid", "Malformed PDF redirect") from None
+                                if hop == 3 or not location or not allowed_url(destination):
+                                    raise ResponseValidationError("redirect_invalid", "Unsafe or excessive PDF redirect")
+                                url = destination
+                                retryable = True
+                                continue
+                            if code != 200:
+                                retryable = code in {408, 425, 429} or 500 <= code <= 599
+                                category = "notpdf" if code in {404, 410} else ("server500" if code == 500 else "http_error")
+                                raise ResponseValidationError(category, f"PDF source returned HTTP {code}")
+                            value = writer(response, url)
+                            return DownloadResult("ok", attempt, value, url, tuple(errors))
+                        finally:
+                            self._last_end = self._clock()
+                            self._last_date = query_date
+                            self._kind_end["pdf"] = self._last_end
+                            if response is not None:
+                                response.close()
+                except ResponseValidationError as exc:
+                    error = AttemptFailure(attempt, exc.category, exc.reason, code)
+                except requests.exceptions.RequestException as exc:
+                    error = AttemptFailure(attempt, "network_error", f"PDF request failed ({type(exc).__name__})",
+                                           code, type(exc).__name__)
+                except OSError as exc:
+                    retryable = False
+                    error = AttemptFailure(attempt, "disk_error", f"PDF file operation failed ({type(exc).__name__})",
+                                           code, type(exc).__name__)
+                errors.append(error)
+                if on_failure is not None:
+                    on_failure(error, url)
+                if not retryable or attempt == MAX_ATTEMPTS:
+                    status = error.category if error.category in {"notpdf", "server500", "empty"} else "fail"
+                    return DownloadResult(status, attempt, None, url, tuple(errors))
                 retry_delay = retry_wait(15 if attempt == 1 else 30, retry_after)
         raise AssertionError("unreachable")

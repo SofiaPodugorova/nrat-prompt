@@ -44,7 +44,7 @@ def _next_page(url: str, query_date: date, current: int) -> int:
     return current + 1
 
 
-def collect_day(client: HttpClient, query_date: date, output: Path) -> dict:
+def collect_day(client: HttpClient, query_date: date, output: Path, *, on_snapshot=None) -> dict:
     """Start at page 1; no resume, PDF requests, or other-day traversal."""
     params = search_params(query_date, 1)
     output = Path(output)
@@ -85,6 +85,8 @@ def collect_day(client: HttpClient, query_date: date, output: Path) -> dict:
             snapshot["incomplete_reasons"] = [{"category": "in_progress", "page": None,
                                                "reason": "Collection has not yet finished"}]
         write_json_atomic(output, snapshot)
+        if on_snapshot is not None:
+            on_snapshot(snapshot)
 
     def problem(category, reason, page, **details):
         entry = {"category": category, "reason": reason, "page": page, **details}
